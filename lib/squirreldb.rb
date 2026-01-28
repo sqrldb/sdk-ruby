@@ -5,6 +5,9 @@ require "securerandom"
 require "websocket-client-simple"
 require "thread"
 
+require_relative "squirreldb/query"
+require_relative "squirreldb/storage"
+
 module SquirrelDB
   VERSION = "0.0.1"
 
