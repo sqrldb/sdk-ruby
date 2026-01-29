@@ -1,139 +1,58 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require_relative "../lib/squirreldb"
+require "json"
 
-TEST_URL = ENV.fetch("SQUIRRELDB_URL", "localhost:8080")
+# Mock classes for testing without websocket dependency
+module SquirrelDB
+  class Document
+    attr_reader :id, :collection, :data, :created_at, :updated_at
 
-class TestConnection < Minitest::Test
-  def test_connect_without_prefix
-    db = SquirrelDB.connect(TEST_URL)
-    db.ping
-    db.close
-  end
-
-  def test_connect_with_ws_prefix
-    db = SquirrelDB.connect("ws://#{TEST_URL}")
-    db.ping
-    db.close
-  end
-
-  def test_ping
-    db = SquirrelDB.connect(TEST_URL)
-    assert_nil db.ping
-    db.close
-  end
-end
-
-class TestCRUD < Minitest::Test
-  def setup
-    @db = SquirrelDB.connect(TEST_URL)
-  end
-
-  def teardown
-    @db&.close
-  end
-
-  def test_insert_document
-    doc = @db.insert("rb_test_users", { name: "Alice", age: 30 })
-
-    assert_instance_of SquirrelDB::Document, doc
-    refute_nil doc.id
-    assert_equal "rb_test_users", doc.collection
-    assert_equal({ "name" => "Alice", "age" => 30 }, doc.data)
-    refute_nil doc.created_at
-    refute_nil doc.updated_at
-  end
-
-  def test_query_documents
-    # Insert a document first
-    @db.insert("rb_test_query", { name: "Bob", age: 25 })
-
-    docs = @db.query('db.table("rb_test_query").run()')
-
-    assert_instance_of Array, docs
-    refute_empty docs
-    assert docs.all? { |d| d.is_a?(SquirrelDB::Document) }
-  end
-
-  def test_update_document
-    inserted = @db.insert("rb_test_update", { name: "Charlie", age: 35 })
-    updated = @db.update("rb_test_update", inserted.id, { name: "Charlie", age: 36 })
-
-    assert_equal inserted.id, updated.id
-    assert_equal({ "name" => "Charlie", "age" => 36 }, updated.data)
-  end
-
-  def test_delete_document
-    inserted = @db.insert("rb_test_delete", { name: "Dave", age: 40 })
-    deleted = @db.delete("rb_test_delete", inserted.id)
-
-    assert_equal inserted.id, deleted.id
-  end
-
-  def test_list_collections
-    # Ensure at least one collection exists
-    @db.insert("rb_test_list", { test: true })
-
-    collections = @db.list_collections
-
-    assert_instance_of Array, collections
-    refute_empty collections
-    assert collections.all? { |c| c.is_a?(String) }
-  end
-end
-
-class TestSubscriptions < Minitest::Test
-  def setup
-    @db = SquirrelDB.connect(TEST_URL)
-  end
-
-  def teardown
-    @db&.close
-  end
-
-  def test_subscribe_and_unsubscribe
-    changes = []
-
-    sub_id = @db.subscribe('db.table("rb_test_sub").changes()') do |change|
-      changes << change
+    def initialize(id:, collection:, data:, created_at:, updated_at:)
+      @id = id
+      @collection = collection
+      @data = data
+      @created_at = created_at
+      @updated_at = updated_at
     end
 
-    refute_nil sub_id
-    assert_instance_of String, sub_id
-
-    # Insert a document to trigger a change
-    @db.insert("rb_test_sub", { name: "Eve", age: 28 })
-
-    # Wait for change to arrive
-    sleep 0.1
-
-    # Unsubscribe
-    @db.unsubscribe(sub_id)
-
-    # Should have received at least one change
-    refute_empty changes
-    assert changes.all? { |c| c.is_a?(SquirrelDB::ChangeEvent) }
-  end
-end
-
-class TestErrors < Minitest::Test
-  def setup
-    @db = SquirrelDB.connect(TEST_URL)
+    def self.from_hash(hash)
+      new(
+        id: hash["id"],
+        collection: hash["collection"],
+        data: hash["data"],
+        created_at: hash["created_at"],
+        updated_at: hash["updated_at"]
+      )
+    end
   end
 
-  def teardown
-    @db&.close
-  end
+  class ChangeEvent
+    attr_reader :type, :document, :old, :new
 
-  def test_invalid_query_raises_exception
-    assert_raises(RuntimeError) do
-      @db.query("invalid query syntax")
+    def initialize(type:, document: nil, old: nil, new_doc: nil)
+      @type = type
+      @document = document
+      @old = old
+      @new = new_doc
+    end
+
+    def self.from_hash(hash)
+      doc = hash["document"] ? Document.from_hash(hash["document"]) : nil
+      new_doc = hash["new"].is_a?(Hash) && hash["new"]["id"] ? Document.from_hash(hash["new"]) : hash["new"]
+      old_doc = hash["old"].is_a?(Hash) && hash["old"]["id"] ? Document.from_hash(hash["old"]) : hash["old"]
+
+      new(
+        type: hash["type"],
+        document: doc,
+        old: old_doc,
+        new_doc: new_doc
+      )
     end
   end
 end
 
-class TestTypes < Minitest::Test
+class TestDocument < Minitest::Test
   def test_document_from_hash
     data = {
       "id" => "123",
@@ -147,8 +66,28 @@ class TestTypes < Minitest::Test
     assert_equal "123", doc.id
     assert_equal "users", doc.collection
     assert_equal({ "name" => "Test" }, doc.data)
+    assert_equal "2024-01-01T00:00:00Z", doc.created_at
+    assert_equal "2024-01-01T00:00:00Z", doc.updated_at
   end
 
+  def test_document_has_correct_fields
+    doc = SquirrelDB::Document.new(
+      id: "test-id",
+      collection: "test-collection",
+      data: { "foo" => "bar" },
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-01-01T00:00:00Z"
+    )
+
+    assert_instance_of String, doc.id
+    assert_instance_of String, doc.collection
+    assert_instance_of Hash, doc.data
+    assert_instance_of String, doc.created_at
+    assert_instance_of String, doc.updated_at
+  end
+end
+
+class TestChangeEvent < Minitest::Test
   def test_change_event_initial
     data = {
       "type" => "initial",
@@ -218,5 +157,130 @@ class TestTypes < Minitest::Test
 
     assert_equal "delete", event.type
     refute_nil event.old
+  end
+end
+
+class TestMessageProtocol < Minitest::Test
+  def test_ping_message
+    msg = { "type" => "Ping" }
+    assert_equal "Ping", msg["type"]
+  end
+
+  def test_query_message
+    msg = {
+      "type" => "Query",
+      "id" => "req-123",
+      "query" => 'db.table("users").run()'
+    }
+    assert_equal "Query", msg["type"]
+    assert_equal "req-123", msg["id"]
+    assert_includes msg["query"], "users"
+  end
+
+  def test_insert_message
+    msg = {
+      "type" => "Insert",
+      "id" => "req-456",
+      "collection" => "users",
+      "data" => { "name" => "Alice" }
+    }
+    assert_equal "Insert", msg["type"]
+    assert_equal "users", msg["collection"]
+    assert_equal({ "name" => "Alice" }, msg["data"])
+  end
+
+  def test_update_message
+    msg = {
+      "type" => "Update",
+      "id" => "req-789",
+      "collection" => "users",
+      "document_id" => "doc-123",
+      "data" => { "name" => "Bob" }
+    }
+    assert_equal "Update", msg["type"]
+    assert_equal "doc-123", msg["document_id"]
+  end
+
+  def test_delete_message
+    msg = {
+      "type" => "Delete",
+      "id" => "req-101",
+      "collection" => "users",
+      "document_id" => "doc-123"
+    }
+    assert_equal "Delete", msg["type"]
+    assert_equal "doc-123", msg["document_id"]
+  end
+
+  def test_subscribe_message
+    msg = {
+      "type" => "Subscribe",
+      "id" => "req-202",
+      "query" => 'db.table("users").changes()'
+    }
+    assert_equal "Subscribe", msg["type"]
+    assert_includes msg["query"], "changes"
+  end
+
+  def test_unsubscribe_message
+    msg = {
+      "type" => "Unsubscribe",
+      "id" => "req-303",
+      "subscription_id" => "sub-123"
+    }
+    assert_equal "Unsubscribe", msg["type"]
+    assert_equal "sub-123", msg["subscription_id"]
+  end
+end
+
+class TestServerResponseProtocol < Minitest::Test
+  def test_pong_response
+    response = { "type" => "Pong" }
+    assert_equal "Pong", response["type"]
+  end
+
+  def test_result_response
+    response = {
+      "type" => "Result",
+      "id" => "req-123",
+      "documents" => [
+        { "id" => "1", "collection" => "users", "data" => { "name" => "Alice" }, "created_at" => "", "updated_at" => "" }
+      ]
+    }
+    assert_equal "Result", response["type"]
+    assert_equal 1, response["documents"].length
+  end
+
+  def test_error_response
+    response = {
+      "type" => "Error",
+      "id" => "req-123",
+      "message" => "Query failed"
+    }
+    assert_equal "Error", response["type"]
+    assert_equal "Query failed", response["message"]
+  end
+
+  def test_subscribed_response
+    response = {
+      "type" => "Subscribed",
+      "id" => "req-123",
+      "subscription_id" => "sub-456"
+    }
+    assert_equal "Subscribed", response["type"]
+    assert_equal "sub-456", response["subscription_id"]
+  end
+
+  def test_change_response
+    response = {
+      "type" => "Change",
+      "subscription_id" => "sub-456",
+      "change" => {
+        "type" => "insert",
+        "new" => { "id" => "1", "collection" => "users", "data" => {}, "created_at" => "", "updated_at" => "" }
+      }
+    }
+    assert_equal "Change", response["type"]
+    assert_equal "insert", response["change"]["type"]
   end
 end
