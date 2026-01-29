@@ -136,11 +136,54 @@ module SquirrelDB
       end
     end
 
+    # Convert filter to structured format (public for SubscriptionBuilder)
+    def self.filter_to_structured(condition)
+      result = {}
+
+      condition.each do |field, value|
+        case field.to_s
+        when "$and"
+          result["$and"] = value.map { |c| filter_to_structured(c) }
+        when "$or"
+          result["$or"] = value.map { |c| filter_to_structured(c) }
+        when "$not"
+          result["$not"] = filter_to_structured(value)
+        else
+          if value.is_a?(Hash) && value[:op]
+            result[field.to_s] = op_to_structured(value[:op], value[:value])
+          else
+            result[field.to_s] = { "$eq" => value }
+          end
+        end
+      end
+
+      result
+    end
+
+    def self.op_to_structured(op, value)
+      case op
+      when :eq then { "$eq" => value }
+      when :ne then { "$ne" => value }
+      when :gt then { "$gt" => value }
+      when :gte then { "$gte" => value }
+      when :lt then { "$lt" => value }
+      when :lte then { "$lte" => value }
+      when :in then { "$in" => value }
+      when :not_in then { "$nin" => value }
+      when :contains then { "$contains" => value }
+      when :starts_with then { "$startsWith" => value }
+      when :ends_with then { "$endsWith" => value }
+      when :exists then { "$exists" => value }
+      else { "$eq" => value }
+      end
+    end
+
     # Query builder
     class Builder
       def initialize(table_name)
         @table_name = table_name
         @filter_expr = nil
+        @filter_condition = nil
         @sort_specs = []
         @limit_value = nil
         @skip_value = nil
@@ -154,7 +197,10 @@ module SquirrelDB
         if block_given?
           condition = block.call(DocProxy.new)
         end
-        @filter_expr = Query.compile_filter(condition) if condition
+        if condition
+          @filter_condition = condition
+          @filter_expr = Query.compile_filter(condition)
+        end
         self
       end
 
@@ -182,7 +228,7 @@ module SquirrelDB
         self
       end
 
-      # Compile to SquirrelDB JS query
+      # Compile to SquirrelDB JS query (legacy)
       def compile
         query = %Q{db.table("#{@table_name}")}
 
@@ -204,6 +250,26 @@ module SquirrelDB
         else
           query += ".run()"
         end
+
+        query
+      end
+
+      # Compile to structured query object (preferred, no JS evaluation on server)
+      def compile_structured
+        query = { "table" => @table_name }
+
+        query["filter"] = Query.filter_to_structured(@filter_condition) if @filter_condition
+
+        unless @sort_specs.empty?
+          query["sort"] = @sort_specs.map do |spec|
+            { "field" => spec[:field], "direction" => spec[:direction].to_s }
+          end
+        end
+
+        query["limit"] = @limit_value if @limit_value
+        query["skip"] = @skip_value if @skip_value
+
+        query["changes"] = { "includeInitial" => false } if @is_changes
 
         query
       end

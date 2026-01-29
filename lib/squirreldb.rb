@@ -7,6 +7,7 @@ require "thread"
 
 require_relative "squirreldb/query"
 require_relative "squirreldb/storage"
+require_relative "squirreldb/cache"
 
 module SquirrelDB
   VERSION = "0.0.1"
@@ -68,7 +69,23 @@ module SquirrelDB
       resp["data"].map { |d| Document.from_hash(d) }
     end
 
-    def subscribe(q, &callback)
+    # Fluent subscription API
+    # Usage: client.subscribe("users").changes { |change| ... }
+    def subscribe(table_name)
+      SubscriptionBuilder.new(self, table_name)
+    end
+
+    # Subscribe with raw query string (legacy)
+    def subscribe_raw(q, &callback)
+      sub_id = generate_id
+      resp = send_message({ type: "subscribe", id: sub_id, query: q })
+      raise resp["error"] if resp["type"] == "error"
+      @mutex.synchronize { @subscriptions[sub_id] = callback }
+      sub_id
+    end
+
+    # Subscribe with structured query
+    def subscribe_structured(q, &callback)
       sub_id = generate_id
       resp = send_message({ type: "subscribe", id: sub_id, query: q })
       raise resp["error"] if resp["type"] == "error"
@@ -204,6 +221,33 @@ module SquirrelDB
 
     def generate_id
       SecureRandom.uuid
+    end
+  end
+
+  # Subscription builder for fluent change subscriptions
+  # Usage: client.subscribe("users").changes { |change| ... }
+  class SubscriptionBuilder
+    def initialize(client, table_name)
+      @client = client
+      @table_name = table_name
+      @filter_condition = nil
+    end
+
+    # Filter changes matching condition
+    def find(condition = nil, &block)
+      if block_given?
+        @filter_condition = block.call(Query::DocProxy.new)
+      elsif condition
+        @filter_condition = condition
+      end
+      self
+    end
+
+    # Subscribe to changes
+    def changes(&callback)
+      query = { "table" => @table_name, "changes" => { "includeInitial" => false } }
+      query["filter"] = Query.filter_to_structured(@filter_condition) if @filter_condition
+      @client.subscribe_structured(query, &callback)
     end
   end
 
