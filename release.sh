@@ -3,18 +3,26 @@ set -e
 
 cd "$(dirname "$0")"
 
-VERSION=$(grep 'spec.version' squirreldb.gemspec | awk -F'"' '{print $2}')
+VERSION="0.1.0"
 
-echo "Building squirreldb Ruby SDK v${VERSION}..."
+echo "Releasing squirreldb-sdk v${VERSION}..."
 
-rm -f squirreldb-*.gem
-
-gem build squirreldb.gemspec
+echo "Installing dependencies..."
+bundle install --quiet
 
 echo "Running tests..."
 bundle exec rake test
 
-echo "Publishing to RubyGems..."
-gem push squirreldb-${VERSION}.gem
+echo "Building gem..."
+gem build squirreldb-sdk.gemspec
 
-echo "Published squirreldb-${VERSION} to RubyGems"
+echo "Publishing to RubyGems..."
+gem push squirreldb-sdk-${VERSION}.gem
+
+echo "Cleaning up..."
+rm -f squirreldb-sdk-${VERSION}.gem
+
+echo "Released squirreldb-sdk@${VERSION}"
+echo ""
+echo "Users can install with:"
+echo "  gem install squirreldb-sdk"

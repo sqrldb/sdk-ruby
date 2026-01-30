@@ -8,6 +8,7 @@ require_relative "squirreldb/types"
 require_relative "squirreldb/client"
 require_relative "squirreldb/storage"
 require_relative "squirreldb/cache"
+require_relative "squirreldb/query"
 
 module SquirrelDB
   VERSION = "0.1.0"
